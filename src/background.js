@@ -54,7 +54,7 @@ class DouyuAPI {
       const dyDid = cookies.find((c) => c.name === "dy_did");
 
       if (!acfUid && !dyDid) {
-        console.log("斗鱼未登录");
+        console.log("斗鱼未登录或cookie不完整");
         return {
           data: [],
           isLoggedIn: false,
@@ -142,7 +142,7 @@ class HuyaAPI {
       const udbUid = cookies.find((c) => c.name === "udb_uid");
 
       if (!udbUid) {
-        console.log("虎牙未登录");
+        console.log("虎牙未登录或cookie不完整");
         return {
           data: [],
           isLoggedIn: false,
@@ -318,6 +318,17 @@ class DouyinAPI {
   async getFollowedStreamers() {
     try {
       const cookies = await this.getCookies("https://www.douyin.com");
+      const sessionID = cookies.find((c) => c.name === "sessionid");
+
+      if (!sessionID) {
+        console.log("抖音未登录或cookie不完整");
+        return {
+          data: [],
+          isLoggedIn: false,
+          loginUrl: "https://www.douyin.com",
+        };
+      }
+
       const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
       console.log("抖音请求cookie:", cookieStr);
 
