@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "直播小助手",
-  "version": "1.3.3",
-  "description": "整合多个直播平台的关注列表",
-  "homepage_url": "https://github.com/L1cardo/Live-Assistant",
-  "author": "Licardo",
+  "version": "1.3.4",
+  "version_name": "1.3.4 · EricWang 派生版",
+  "description": "EricWang 维护的直播小助手派生版，整合多个直播平台的关注列表。基于 Licardo 的开源项目。",
+  "homepage_url": "https://github.com/Feeengyuuu/Live-Assistant",
+  "author": "EricWang",
   "icons": {
     "128": "icon.png"
   },
@@ -25,19 +26,5 @@
   },
   "background": {
     "service_worker": "/src/background.js"
-  },
-  "content_scripts": [
-    {
-      "matches": [
-        "*://*.douyu.com/*",
-        "*://*.huya.com/*",
-        "*://*.bilibili.com/*",
-        "*://*.douyin.com/*",
-        "*://*.twitch.tv/*"
-      ],
-      "js": [
-        "/src/content.js"
-      ]
-    }
-  ]
+  }
 }

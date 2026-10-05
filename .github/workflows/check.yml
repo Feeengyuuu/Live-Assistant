@@ -1,0 +1,17 @@
+name: Code checks
+on:
+  pull_request:
+  push:
+    branches: ['**']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - run: npm run check
+      - run: npm test

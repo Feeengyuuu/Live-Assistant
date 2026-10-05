@@ -53,4 +53,18 @@ Temporary Items
 .history
 .ionide
 
+# Local development and generated artifacts
+node_modules/
+dist/
+output/
+*.zip
+.claude/
+.learnings/
+backup-20260418/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
 # End of https://www.toptal.com/developers/gitignore/api/macos,visualstudiocode

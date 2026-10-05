@@ -4,58 +4,70 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v1.0.0)'
+        description: 'Existing release tag (e.g. v1.3.4)'
         required: true
-        default: 'v1.0.0'
+        type: string
+      draft:
+        description: 'Create a draft release for review'
+        required: true
+        default: false
+        type: boolean
   push:
     tags:
       - v*.*.*
 
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   release:
-    name: Create Release
+    name: Package and publish this fork
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
-      - name: ⤵️ Check out code from GitHub
+      - name: Check out the exact release tag
         uses: actions/checkout@v5
         with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
           fetch-depth: 0
 
-      - name: 📦 Package extension
-        run: |
-          zip -r live-assistant.zip src/ icon.png manifest.json
-
-      - name: Get tag
-        id: get-tag
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            current_tag="${{ github.event.inputs.tag }}"
-          else
-            current_tag="${GITHUB_REF#refs/tags/}"
-          fi
-          previous_tag=$(git tag --sort=-v:refname | grep -v "^$current_tag$" | head -n 1)
-          
-          # If no previous tag found, use a default value
-          if [ -z "$previous_tag" ]; then
-            previous_tag="HEAD"
-          fi
-          
-          echo "current_tag=${current_tag}" >> $GITHUB_OUTPUT
-          echo "previous_tag=${previous_tag}" >> $GITHUB_OUTPUT
-
-      - name: 📝 Create Release
-        uses: softprops/action-gh-release@v2
+      - uses: actions/setup-node@v6
         with:
-          tag_name: ${{ steps.get-tag.outputs.current_tag }}
-          name: ${{ steps.get-tag.outputs.current_tag }}
-          body: |
-            ${{ github.event.head_commit.message }}
+          node-version: '22'
+          package-manager-cache: false
 
-            **Full Changelog**: https://github.com/L1cardo/Live-Assistant/compare/${{ steps.get-tag.outputs.previous_tag }}...${{ steps.get-tag.outputs.current_tag }}
-          draft: false
+      - name: Verify release version and notes
+        id: release
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          node scripts/verify-release.cjs "$RELEASE_TAG"
+          release_notes="docs/releases/${RELEASE_TAG}.md"
+          test -s "$release_notes"
+          echo "tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "notes=${release_notes}" >> "$GITHUB_OUTPUT"
+          echo "archive=dist/live-assistant-${RELEASE_TAG#v}.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Check, test and build the reproducible extension package
+        run: npm run package
+
+      - name: Publish GitHub Release in the current repository
+        uses: softprops/action-gh-release@v3
+        with:
+          repository: ${{ github.repository }}
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: ${{ steps.release.outputs.tag }}
+          body_path: ${{ steps.release.outputs.notes }}
+          draft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft }}
           prerelease: false
-          files: live-assistant.zip
+          fail_on_unmatched_files: true
+          files: |
+            ${{ steps.release.outputs.archive }}
+            ${{ steps.release.outputs.archive }}.sha256
