@@ -609,7 +609,7 @@ class LiveAssistant {
     this.offlineEmpty = this.el("div", { class: "offline-empty", role: "status" });
     this.offlineBody.append(this.offlineCoverageNotice, this.offlineList, this.offlineEmpty);
     this.offlineSection.append(offlineHeading, this.offlineBody);
-    content.replaceChildren(this.noticeContainer, this.streamerContainer, this.emptyNotice, this.offlineSection, this.buildFooter());
+    content.replaceChildren(this.streamerContainer, this.emptyNotice, this.noticeContainer, this.offlineSection, this.buildFooter());
     this.displayVersion();
   }
 
@@ -668,7 +668,7 @@ class LiveAssistant {
     this.setText(this.liveCount, `${sorted.length} 位主播`);
     this.setHidden(this.streamerContainer, !sorted.length);
     this.setHidden(this.emptyNotice, sorted.length > 0);
-    this.setText(this.emptyNotice, !enabled.length ? "请在设置中启用要查看的平台" : loading ? "正在加载关注列表…" : incomplete ? "暂时没有可显示的直播，请查看上方平台状态" : "暂无正在直播的主播");
+    this.setText(this.emptyNotice, !enabled.length ? "请在设置中启用要查看的平台" : loading ? "正在加载关注列表…" : incomplete ? "暂时没有可显示的直播，请查看下方平台状态" : "暂无正在直播的主播");
     this.setAttribute(this.streamerList, "aria-busy", String(loading));
     this.renderOfflineStreamers(offline, live, enabled, loading);
     if (focused?.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true });
