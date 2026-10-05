@@ -1,4 +1,4 @@
-![直播小助手](icon.png)
+<img src="icon.png" alt="直播小助手" width="128" height="128" />
 # 直播小助手 · EricWang 派生版
 
 [English](README.en.md)

@@ -1,4 +1,4 @@
-![Live Assistant](icon.png)
+<img src="icon.png" alt="Live Assistant" width="128" height="128" />
 
 # Live Assistant · EricWang fork
 

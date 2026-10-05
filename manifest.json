@@ -7,6 +7,9 @@
   "homepage_url": "https://github.com/Feeengyuuu/Live-Assistant",
   "author": "EricWang",
   "icons": {
+    "16": "icon.png",
+    "32": "icon.png",
+    "48": "icon.png",
     "128": "icon.png"
   },
   "permissions": [
@@ -21,6 +24,10 @@
     "*://*.twitch.tv/*"
   ],
   "action": {
+    "default_icon": {
+      "16": "icon.png",
+      "32": "icon.png"
+    },
     "default_popup": "/src/popup.html",
     "default_title": "直播小助手"
   },

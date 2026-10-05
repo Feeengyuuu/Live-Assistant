@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { buildPackage, crc32 } = require('../scripts/build-package.cjs');
+const { checkManifestFiles } = require('../scripts/check.cjs');
 
 // Keep this expectation independent from the builder so removing a required asset fails a test.
 const EXPECTED_FILES = [
@@ -105,5 +106,32 @@ test('a missing title wordmark fails packaging instead of shipping a broken popu
   const root = fixture(t);
   fs.unlinkSync(path.join(root, 'src/assets/title-wordmark.png'));
   assert.throws(() => buildPackage({ rootDir: root }), /ENOENT/);
+  assert.equal(fs.existsSync(path.join(root, 'dist')), false);
+});
+
+test('toolbar icons accept string and size-map references in both checks and packages', (t) => {
+  const root = fixture(t);
+  const manifestPath = path.join(root, 'manifest.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  for (const icon of ['icon.png', { 16: 'icon.png', 32: 'icon.png' }]) {
+    manifest.action.default_icon = icon;
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    assert.doesNotThrow(() => checkManifestFiles(root, manifest));
+    const archive = readArchive(buildPackage({ rootDir: root }).archivePath);
+    assert.deepEqual(JSON.parse(archive.get('manifest.json')).action.default_icon, icon);
+    assert.deepEqual(archive.get('icon.png'), fs.readFileSync(path.join(root, 'icon.png')));
+  }
+});
+
+test('toolbar icon references cannot escape resource validation or the package allowlist', (t) => {
+  const root = fixture(t);
+  const manifestPath = path.join(root, 'manifest.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  for (const icon of ['missing-action.png', { 16: 'icon.png', 32: 'missing-action.png' }]) {
+    manifest.action.default_icon = icon;
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    assert.throws(() => checkManifestFiles(root, manifest), /Missing extension entry: missing-action.png/);
+    assert.throws(() => buildPackage({ rootDir: root }), /not in the package allowlist: missing-action.png/);
+  }
   assert.equal(fs.existsSync(path.join(root, 'dist')), false);
 });

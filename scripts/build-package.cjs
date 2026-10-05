@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { verifyRelease } = require('./verify-release.cjs');
+const { getManifestResources } = require('./check.cjs');
 
 // Explicit runtime allowlist: repository backups, test output and local account data never enter a release.
 const PACKAGE_FILES = Object.freeze([
@@ -91,8 +92,8 @@ function buildPackage({ rootDir = path.join(__dirname, '..'), outputDir } = {}) 
   const entries = PACKAGE_FILES.map(name => readPackageFile(root, name));
   const manifest = JSON.parse(entries.find(entry => entry.name === 'manifest.json').data.toString('utf8'));
   const version = verifyRelease(`v${manifest.version}`, manifest);
-  for (const reference of [manifest.background?.service_worker, manifest.action?.default_popup, ...Object.values(manifest.icons || {})]) {
-    if (typeof reference !== 'string' || !PACKAGE_FILES.includes(reference.replace(/^\//, ''))) {
+  for (const reference of getManifestResources(manifest)) {
+    if (!PACKAGE_FILES.includes(reference.replace(/^\//, ''))) {
       throw new Error(`Manifest entry is not in the package allowlist: ${reference}`);
     }
   }
