@@ -9,6 +9,7 @@ const PACKAGE_FILES = Object.freeze([
   'NOTICE.md',
   'icon.png',
   'manifest.json',
+  'src/assets/title-wordmark.png',
   'src/background.js',
   'src/popup.html',
   'src/popup.js',

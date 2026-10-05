@@ -90,10 +90,21 @@
       }
 
       .title {
-        font-size: 18px;
-        font-weight: 700;
-        color: var(--text-primary);
-        letter-spacing: -0.02em;
+        position: relative;
+        width: 168px;
+        height: 34px;
+        overflow: hidden;
+        flex-shrink: 0;
+      }
+
+      .title img {
+        display: block;
+        position: absolute;
+        top: 50%;
+        width: 168px;
+        height: 56px;
+        /* The generated PNG includes transparent vertical padding. */
+        transform: translateY(-48%);
       }
 
       .btn-group {
@@ -915,7 +926,9 @@
   <body>
     <div class="header">
       <div class="header-left">
-        <div class="title">直播小助手</div>
+        <div class="title">
+          <img src="assets/title-wordmark.png" width="2172" height="724" alt="直播小助手" decoding="async" draggable="false" />
+        </div>
       </div>
       <div class="btn-group">
         <button class="btn" id="refreshBtn">刷新</button>
