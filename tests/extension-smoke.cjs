@@ -25,7 +25,7 @@ fs.mkdirSync(output, { recursive:true });
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
     const id = new URL(worker.url()).host;
     const manifest = await worker.evaluate(() => chrome.runtime.getManifest());
-    assert.equal(manifest.version,'1.3.4');
+    assert.equal(manifest.version,'1.5.0');
     const now=Date.now();
     const entries={
       douyu:{name:dy.room.nickname,roomId:'288016',platform:'douyu',url:'https://www.douyu.com/288016',isLive:true,

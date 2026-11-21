@@ -10,7 +10,7 @@ const { checkManifestFiles } = require('../scripts/check.cjs');
 // Keep this expectation independent from the builder so removing a required asset fails a test.
 const EXPECTED_FILES = [
   'LICENSE', 'NOTICE.md', 'icon.png', 'manifest.json',
-  'src/assets/title-wordmark.png', 'src/background.js', 'src/popup.html', 'src/popup.js', 'src/thumbnails.js',
+  'src/assets/title-wordmark.png', 'src/background.js', 'src/popup.html', 'src/popup.js', 'src/settings.js', 'src/thumbnails.js',
 ];
 const WORDMARK_FIXTURE = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN/8AAAAASUVORK5CYII=',

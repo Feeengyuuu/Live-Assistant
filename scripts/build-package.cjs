@@ -14,6 +14,7 @@ const PACKAGE_FILES = Object.freeze([
   'src/background.js',
   'src/popup.html',
   'src/popup.js',
+  'src/settings.js',
   'src/thumbnails.js',
 ]);
 

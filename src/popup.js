@@ -1,6 +1,6 @@
 // EricWang fork of Licardo's Live-Assistant. Modified 2026-10-05; see NOTICE.md and LICENSE (GPLv3).
 // Popup 主逻辑：
-// - 从 background 拉取 5 个平台的关注列表并渲染
+// - 从 background 拉取 5 个平台的关注列表和 YouTube、Kick 追踪频道并渲染
 // - 缓存 + 收藏 + 平台启用/排序 + 悬浮按钮等用户设置
 //
 // 设计要点：
@@ -20,6 +20,12 @@ const ARROW_DOWN_SVG =
 const CACHE_TTL_MS = 60_000;
 const LIVE_HISTORY_LIMIT = 1000;
 const LIVE_HISTORY_RETENTION_MS = 180 * 24 * 60 * 60 * 1000;
+// 设置页“追踪频道”的文本框：平台、文本框 id 和频道识别规则。
+const TRACKED_FIELDS = [
+  { platform: "youtube", id: "trackedYouTube", normalize: normalizeYouTubeChannel },
+  { platform: "twitch", id: "trackedTwitch", normalize: normalizeTwitchChannel },
+  { platform: "kick", id: "trackedKick", normalize: normalizeKickChannel },
+];
 
 class LiveAssistant {
   constructor() {
@@ -29,9 +35,13 @@ class LiveAssistant {
       bilibili: { name: "B站", icon: "https://www.bilibili.com/favicon.ico", loginUrl: "https://www.bilibili.com" },
       douyin: { name: "抖音", icon: "https://www.douyin.com/favicon.ico", loginUrl: "https://www.douyin.com" },
       twitch: { name: "Twitch", icon: "https://www.twitch.tv/favicon.ico", loginUrl: "https://www.twitch.tv" },
+      youtube: { name: "YouTube", icon: "https://www.youtube.com/favicon.ico", loginUrl: "https://www.youtube.com" },
+      kick: { name: "Kick", icon: "https://kick.com/favicon.ico", loginUrl: "https://kick.com" },
     };
     this.platformOrder = Object.keys(this.platforms);
     this.enabledPlatforms = [...this.platformOrder];
+    this.trackedChannels = normalizeTrackedChannels();
+    this.liveNotifications = normalizeLiveNotifications();
     this.floatingButtonsVisible = true;
     this.floatingButtonsCollapsed = false;
     this.favoriteStreamers = new Set();
@@ -75,6 +85,10 @@ class LiveAssistant {
     document.getElementById("resetSettingsBtn").addEventListener("click", () => this.resetSettings());
     document.getElementById("cancelSettingsBtn").addEventListener("click", () => this.toggleSettings());
     document.getElementById("settingsPanel").addEventListener("change", () => this.updateSettingsDraft());
+    document.getElementById("settingsPanel").addEventListener("input", (event) => {
+      if (event.target.matches(".tracked-field textarea")) this.updateSettingsDraft();
+    });
+    document.getElementById("testNotifyBtn").addEventListener("click", () => this.sendTestNotification());
     document.getElementById("content").addEventListener("click", (event) => this.handleContentClick(event));
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) {
@@ -154,16 +168,17 @@ class LiveAssistant {
     try {
       saved = await chrome.storage.local.get([
         "platformCacheVersion", "platformCache", "cachedStreamers", "cachedTimestamp", "favoriteStreamers", "lastLiveHistory",
-        "platformOrder", "enabledPlatforms", "floatingButtonsVisible", "floatingButtonsCollapsed",
+        "platformOrder", "enabledPlatforms", "floatingButtonsVisible", "floatingButtonsCollapsed", "trackedChannels",
+        "liveNotifications",
       ]);
     } catch (error) {
       console.warn("读取本地设置失败", error);
     }
     this.lastLiveHistory = this.normalizeLiveHistory(saved.lastLiveHistory);
     this.platformOrder = this.normalizePlatformOrder(saved.platformOrder);
-    if (Array.isArray(saved.enabledPlatforms)) {
-      this.enabledPlatforms = [...new Set(saved.enabledPlatforms.filter((key) => this.platforms[key]))];
-    }
+    this.trackedChannels = normalizeTrackedChannels(saved.trackedChannels);
+    this.liveNotifications = normalizeLiveNotifications(saved.liveNotifications);
+    this.enabledPlatforms = resolveEnabledPlatforms(saved, Object.keys(this.platforms));
     if (Array.isArray(saved.favoriteStreamers)) {
       this.favoriteStreamers = new Set(saved.favoriteStreamers.filter((key) => typeof key === "string"));
     }
@@ -720,8 +735,9 @@ class LiveAssistant {
       const previous = this.lastLiveHistory[id];
       const record = { platform: streamer.platform, observedLiveAt: Math.max(previous?.observedLiveAt || 0, fetchedAt) };
       let explicit = this.platformLastLive(streamer);
-      // Twitch's documented stream.createdAt is a start timestamp; other adapters need explicit provenance.
-      if (!explicit && streamer.platform === "twitch" && streamer.startTime) {
+      // Twitch stream.createdAt, YouTube liveBroadcastDetails.startTimestamp and Kick livestream.start_time
+      // are start timestamps; other adapters need explicit provenance.
+      if (!explicit && ["twitch", "youtube", "kick"].includes(streamer.platform) && streamer.startTime) {
         const time = this.parseLiveTimestamp(streamer.startTime);
         if (time) explicit = { time, source: "platform_start" };
       }
@@ -1244,17 +1260,43 @@ class LiveAssistant {
       platformOrder: [...this.platformOrder], enabledPlatforms: this.getEnabledPlatformKeys(),
       floatingButtonsVisible: this.floatingButtonsVisible,
       floatingButtonsCollapsed: this.floatingButtonsCollapsed,
+      trackedChannels: normalizeTrackedChannels(this.trackedChannels),
+      liveNotifications: normalizeLiveNotifications(this.liveNotifications),
     };
+  }
+
+  readTrackedChannelFields() {
+    return Object.fromEntries(TRACKED_FIELDS.map((field) =>
+      [field.platform, parseTrackedChannelText(document.getElementById(field.id).value, field.normalize)]));
   }
 
   readSettingsDraft() {
     const items = [...document.querySelectorAll("#platformSortable .platform-item")];
+    const tracked = this.readTrackedChannelFields();
     return {
       platformOrder: this.normalizePlatformOrder(items.map((item) => item.dataset.platform)),
       enabledPlatforms: items.filter((item) => item.querySelector("input").checked).map((item) => item.dataset.platform),
       floatingButtonsVisible: document.getElementById("floatingButtonToggle").checked,
       floatingButtonsCollapsed: this.settingsDraftCollapsed,
+      trackedChannels: Object.fromEntries(TRACKED_FIELDS.map((field) => [field.platform, tracked[field.platform].channels])),
+      liveNotifications: normalizeLiveNotifications({
+        enabled: document.getElementById("notifyToggle").checked,
+        intervalMinutes: document.getElementById("notifyInterval").value,
+      }),
     };
+  }
+
+  // Unrecognized entries are shown instead of being silently dropped on Save.
+  renderTrackedChannelErrors() {
+    const tracked = this.readTrackedChannelFields();
+    const invalid = TRACKED_FIELDS.flatMap((field) => tracked[field.platform].invalid);
+    for (const field of TRACKED_FIELDS) {
+      this.setAttribute(document.getElementById(field.id), "aria-invalid", String(tracked[field.platform].invalid.length > 0));
+    }
+    const message = document.getElementById("trackedInvalid");
+    this.setText(message, invalid.length ? `无法识别：${invalid.join("、")}` : "");
+    this.setHidden(message, !invalid.length);
+    return invalid.length;
   }
 
   updateSettingsDraft() {
@@ -1264,7 +1306,11 @@ class LiveAssistant {
     const status = document.getElementById("settingsSaveState");
     status.dataset.dirty = String(dirty);
     this.setText(status, dirty ? "有未保存的更改" : "已保存");
+    if (this.renderTrackedChannelErrors()) this.setText(status, "请修正无法识别的频道");
     this.setText(document.getElementById("enabledPlatformCount"), `${draft.enabledPlatforms.length} / ${this.platformOrder.length} 已启用`);
+    document.getElementById("notifyInterval").disabled = !draft.liveNotifications.enabled;
+    this.setText(document.getElementById("notifyFavoriteCount"), this.favoriteStreamers.size
+      ? `当前收藏 ${this.favoriteStreamers.size} 位。` : "当前还没有收藏的主播，点卡片右上角的 ☆ 收藏。");
     const items = [...document.querySelectorAll("#platformSortable .platform-item")];
     items.forEach((item, index) => {
       this.setText(item.querySelector(".platform-position"), String(index + 1));
@@ -1311,6 +1357,11 @@ class LiveAssistant {
     }
     this.setupDragAndDrop();
     document.getElementById("floatingButtonToggle").checked = snapshot.floatingButtonsVisible;
+    for (const field of TRACKED_FIELDS) {
+      document.getElementById(field.id).value = snapshot.trackedChannels[field.platform].join("\n");
+    }
+    document.getElementById("notifyToggle").checked = snapshot.liveNotifications.enabled;
+    document.getElementById("notifyInterval").value = String(snapshot.liveNotifications.intervalMinutes);
     this.updateSettingsDraft();
   }
 
@@ -1367,11 +1418,17 @@ class LiveAssistant {
 
   async applySettings() {
     if (this.settingsSaving || !this.settingsOpen) return;
+    if (this.renderTrackedChannelErrors()) {
+      const field = document.querySelector('.tracked-field textarea[aria-invalid="true"]');
+      field.focus();
+      return;
+    }
     const draft = this.readSettingsDraft();
     if (JSON.stringify(draft) === this.settingsBaseline) {
       this.toggleSettings();
       return;
     }
+    const previousTracked = this.trackedChannels;
     // Invalidate before waiting for storage; a late response must not restore disabled platforms.
     this.invalidateRefresh();
     this.settingsSaving = true;
@@ -1391,12 +1448,34 @@ class LiveAssistant {
     this.enabledPlatforms = draft.enabledPlatforms;
     this.floatingButtonsVisible = draft.floatingButtonsVisible;
     this.floatingButtonsCollapsed = draft.floatingButtonsCollapsed;
+    this.trackedChannels = draft.trackedChannels;
+    this.liveNotifications = draft.liveNotifications;
+    // A changed channel list makes the cached result for that platform out of date immediately.
+    for (const { platform: key } of TRACKED_FIELDS) {
+      if (JSON.stringify(previousTracked[key]) !== JSON.stringify(draft.trackedChannels[key]) && this.platformState[key]) {
+        this.platformState[key].fetchedAt = 0;
+      }
+    }
     this.toggleSettings();
     this.renderStreamers();
     const stale = this.getEnabledPlatformKeys().filter((key) => !this.isPlatformFresh(key));
     if (stale.length) this.refreshPlatforms(stale);
     else this.refreshVisibleOfflineFollowers();
     this.showMessage("设置已保存");
+  }
+
+  // Lets the user confirm that Chrome and the operating system actually display notifications.
+  sendTestNotification() {
+    const button = document.getElementById("testNotifyBtn");
+    if (button.disabled) return;
+    button.disabled = true;
+    const finish = (response) => {
+      button.disabled = false;
+      this.showMessage(response?.success ? "已发送测试通知" : response?.error || "通知发送失败");
+    };
+    try {
+      chrome.runtime.sendMessage({ action: "testLiveNotification" }, (response) => finish(chrome.runtime.lastError ? null : response));
+    } catch { finish(null); }
   }
 
   setSettingsSaving(saving) {
@@ -1413,7 +1492,8 @@ class LiveAssistant {
     // This only changes the editable draft. Favorites, cached lists and saved preferences stay intact until Save.
     const all = Object.keys(this.platforms);
     this.renderSettings({ platformOrder: all, enabledPlatforms: all,
-      floatingButtonsVisible: true, floatingButtonsCollapsed: false });
+      floatingButtonsVisible: true, floatingButtonsCollapsed: false, trackedChannels: normalizeTrackedChannels(),
+      liveNotifications: normalizeLiveNotifications() });
     const status = document.getElementById("settingsSaveState");
     if (status.dataset.dirty === "true") this.setText(status, "已恢复默认选项，保存后生效");
   }

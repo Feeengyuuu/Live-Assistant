@@ -8,7 +8,7 @@ A Chrome extension developed and maintained by **EricWang**, bringing followed s
 
 This is an independently maintained, unofficial fork of [Live-Assistant](https://github.com/L1cardo/Live-Assistant) by **Licardo (L1cardo)**. Thank you to the original author and upstream contributors for making the project available as free software. This fork remains licensed under **GPLv3** and retains upstream attribution; see [NOTICE.md](NOTICE.md).
 
-Version: **1.3.4**. Upstream base: `v1.3.3` (`8b282d1`). Modification date: **2026-10-05**.
+Version: **1.5.0**. Upstream base: `v1.3.3` (`8b282d1`). Modification date: **2026-11-21**.
 
 [Download](https://github.com/Feeengyuuu/Live-Assistant/releases/latest) · [Release notes](docs/releases/v1.3.4.md) · [Report an issue](https://github.com/Feeengyuuu/Live-Assistant/issues)
 
@@ -23,6 +23,8 @@ Settings preview with example preferences:
 - Last successful results are retained per platform, with clear refresh failure and incomplete-list notices.
 - Open a stream from its card; favorites move to the top immediately without another follow-list request.
 - Customize platform order, enabled platforms and floating buttons, with light/dark themes following the system.
+- "Tracked channels" in Settings accepts YouTube channels (@handle, channel ID or link), Twitch channels and Kick channels (name or link), shown live without following them.
+- Go-live notifications: a system notification when a ★ favorite changes from offline to live; clicking opens the stream. On by default, checking every 5 minutes (2/5/10/15 selectable) and only requesting enabled platforms that have favorites. Settings can send a test notification.
 - Fixed 720 × 600 popup with three columns of preview cards.
 - A compact two-column offline list below live streams, collapsed by default and loaded on demand, with room links, favorites and available last-live records.
 
@@ -34,7 +36,9 @@ Settings preview with example preferences:
 | Huya | Paginated follow list, live status, popularity metrics and provider previews | Explicit offline records from the same follow pages |
 | Bilibili | Followed live streams, viewer counts and additional live keyframes | Official live-follow directory loaded independently as needed when expanded |
 | Douyin | Follow list, live status, viewer counts and provider previews | No reliable source verified yet |
-| Twitch | Followed live streams, viewer counts and live previews | No reliable source verified yet |
+| Twitch | Followed live streams, viewer counts and live previews; optional tracked channels without following | No reliable source verified yet |
+| YouTube | Tracked channels from Settings (default IShowSpeed, Kai Cenat), no login; live status, concurrent viewers and live previews | Tracked channels explicitly not live |
+| Kick | Tracked channels from Settings, no login; live status, viewer counts, live snapshots and start time | Tracked channels explicitly not live, with the last stream start recorded by the platform |
 
 These capabilities depend on platform login and API availability; they do not guarantee availability for every account. Images are static snapshots or covers supplied by the platforms and may be delayed.
 
@@ -66,7 +70,7 @@ To update an existing unpacked installation, update the source in the same direc
 
 **Restore default settings** (恢复默认设置) only resets the current draft to the default platform order, all platforms enabled and default floating navigation. It takes effect after saving and preserves favorites and cached follow lists.
 
-Successful results can be reused for 60 seconds. **Refresh** requests updates from enabled platforms. It refreshes the main lists while Offline is collapsed, and also requests independent offline supplements when expanded. Network failures and incomplete lists retain the last complete result with a status notice; confirmed login failures clear that platform's old list and show its login link. Updates happen on popup opening and manual refresh, without continuous polling.
+Successful results can be reused for 60 seconds. **Refresh** requests updates from enabled platforms. It refreshes the main lists while Offline is collapsed, and also requests independent offline supplements when expanded. Network failures and incomplete lists retain the last complete result with a status notice; confirmed login failures clear that platform's old list and show its login link. Lists update on popup opening and manual refresh. With go-live notifications on, the background checks only platforms with favorites at the chosen interval, and not while Chrome is closed. Favorites already live on the first check or when starred are recorded without a notification; failed requests and short drops do not re-announce a stream.
 
 Douyu previews prefer live snapshots and Bilibili previews prefer live keyframes. An available cover is used when no snapshot is available or when the snapshot image fails to load. See the [UI guide (Chinese)](UI-UPGRADE-GUIDE.md) for details.
 
@@ -112,7 +116,7 @@ npm test
 npm run package
 ```
 
-These commands do not need `npm install`. `check` validates syntax and extension entry files; `test` runs regressions; `package` runs both before producing `dist/live-assistant-1.3.4.zip` and its SHA-256 file. Packaging uses an explicit allowlist of runtime source, icon, manifest, the complete LICENSE and NOTICE. Local backups and browser verification data are excluded. Optional browser tests use Playwright with mocked data; see the [contribution guide (Chinese)](CONTRIBUTING.md#开发和测试) for setup. Passing mocked tests does not establish that every platform works with a real account.
+These commands do not need `npm install`. `check` validates syntax and extension entry files; `test` runs regressions; `package` runs both before producing `dist/live-assistant-1.5.0.zip` and its SHA-256 file. Packaging uses an explicit allowlist of runtime source, icon, manifest, the complete LICENSE and NOTICE. Local backups and browser verification data are excluded. Optional browser tests use Playwright with mocked data; see the [contribution guide (Chinese)](CONTRIBUTING.md#开发和测试) for setup. Passing mocked tests does not establish that every platform works with a real account.
 
 ## ⚠️ Data and freshness
 

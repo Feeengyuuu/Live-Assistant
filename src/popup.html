@@ -679,11 +679,44 @@
       }
       .platform-switch input:checked + .switch-slider { background: var(--accent-color); }
       .platform-switch input:checked + .switch-slider::before { transform: translateX(15px); }
+      .settings-tracked { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border-color); }
+      .settings-tracked .settings-heading { margin-bottom: 7px; }
+      .tracked-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 12px 0 9px; }
+      .tracked-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+      .tracked-field-name { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; color: var(--text-primary); }
+      .tracked-field-name .platform-icon { width: 16px; height: 16px; }
+      .tracked-field textarea {
+        min-height: 76px;
+        resize: vertical;
+        padding: 8px 10px;
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-sm);
+        background: var(--card-bg);
+        color: var(--text-primary);
+        font: 12px/1.6 "Cascadia Mono", Consolas, ui-monospace, monospace;
+      }
+      .tracked-field textarea:focus-visible { outline-offset: 0; border-color: transparent; }
+      .tracked-field textarea[aria-invalid="true"] { border-color: #d0544f; }
+      .tracked-invalid { margin: 9px 0 0; font-size: 12px; line-height: 1.5; color: #d0544f; overflow-wrap: anywhere; }
       .settings-aside { border-left: 1px solid var(--border-color); padding-left: 23px; }
       .settings-display .settings-heading { margin-bottom: 15px; }
       .setting-field { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
       .setting-field-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
       .settings-display .settings-description { margin-top: 8px; }
+      .settings-notify { margin-top: 27px; padding-top: 21px; border-top: 1px solid var(--border-color); }
+      .settings-notify .settings-heading { margin-bottom: 15px; }
+      .notify-interval { margin-top: 12px; }
+      .notify-interval select {
+        padding: 5px 8px;
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-sm);
+        background: var(--card-bg);
+        color: var(--text-primary);
+        font: inherit;
+        font-size: 12px;
+      }
+      .notify-interval select:disabled { opacity: 0.5; }
+      .settings-notify .settings-description { margin: 8px 0 12px; }
       .settings-recovery { margin-top: 27px; padding-top: 21px; border-top: 1px solid var(--border-color); }
       .settings-recovery .settings-heading { margin-bottom: 8px; }
       .settings-recovery .settings-description { margin-bottom: 13px; }
@@ -954,14 +987,36 @@
           <p>选择你想看的平台，让直播列表按你的习惯排列。</p>
         </div>
         <div class="settings-layout">
-          <section class="settings-platforms" aria-labelledby="platformSettingsTitle">
-            <div class="settings-section-heading">
-              <h2 class="settings-heading" id="platformSettingsTitle">关注平台</h2>
-              <span class="platform-enabled-count" id="enabledPlatformCount"></span>
-            </div>
-            <p class="settings-description">拖动或使用箭头调整顺序，关闭的平台不显示。</p>
-            <ul class="platform-sortable-list" id="platformSortable" aria-label="平台显示顺序"></ul>
-          </section>
+          <div class="settings-main">
+            <section class="settings-platforms" aria-labelledby="platformSettingsTitle">
+              <div class="settings-section-heading">
+                <h2 class="settings-heading" id="platformSettingsTitle">关注平台</h2>
+                <span class="platform-enabled-count" id="enabledPlatformCount"></span>
+              </div>
+              <p class="settings-description">拖动或使用箭头调整顺序，关闭的平台不显示。</p>
+              <ul class="platform-sortable-list" id="platformSortable" aria-label="平台显示顺序"></ul>
+            </section>
+            <section class="settings-tracked" aria-labelledby="trackedSettingsTitle">
+              <h2 class="settings-heading" id="trackedSettingsTitle">追踪频道</h2>
+              <p class="settings-description" id="trackedHelp">无需登录或关注，直接查询这些频道是否开播。每行一个，可填账号或频道链接。</p>
+              <div class="tracked-fields">
+                <label class="tracked-field">
+                  <span class="tracked-field-name"><img class="platform-icon" src="https://www.youtube.com/favicon.ico" alt="" />YouTube</span>
+                  <textarea id="trackedYouTube" rows="3" spellcheck="false" autocomplete="off" placeholder="@IShowSpeed" aria-describedby="trackedHelp trackedInvalid"></textarea>
+                </label>
+                <label class="tracked-field">
+                  <span class="tracked-field-name"><img class="platform-icon" src="https://www.twitch.tv/favicon.ico" alt="" />Twitch</span>
+                  <textarea id="trackedTwitch" rows="3" spellcheck="false" autocomplete="off" placeholder="kaicenat" aria-describedby="trackedHelp trackedTwitchHelp trackedInvalid"></textarea>
+                </label>
+                <label class="tracked-field">
+                  <span class="tracked-field-name"><img class="platform-icon" src="https://kick.com/favicon.ico" alt="" />Kick</span>
+                  <textarea id="trackedKick" rows="3" spellcheck="false" autocomplete="off" placeholder="xqc" aria-describedby="trackedHelp trackedInvalid"></textarea>
+                </label>
+              </div>
+              <p class="settings-description" id="trackedTwitchHelp">Twitch 已关注的频道不必重复填写；Twitch 追踪频道只在开播时显示，且需要登录 Twitch。</p>
+              <p class="tracked-invalid" id="trackedInvalid" role="alert" hidden></p>
+            </section>
+          </div>
           <div class="settings-aside">
             <section class="settings-display" aria-labelledby="displaySettingsTitle">
               <h2 class="settings-heading" id="displaySettingsTitle">显示</h2>
@@ -974,9 +1029,30 @@
               </div>
               <p class="settings-description" id="floatingButtonHelp">在直播列表右侧显示按钮，快速跳转到指定平台。</p>
             </section>
+            <section class="settings-notify" aria-labelledby="notifySettingsTitle">
+              <h2 class="settings-heading" id="notifySettingsTitle">开播通知</h2>
+              <div class="setting-field">
+                <span class="setting-field-name" id="notifyLabel">收藏主播开播提醒</span>
+                <label class="platform-switch">
+                  <input type="checkbox" id="notifyToggle" role="switch" aria-labelledby="notifyLabel" aria-describedby="notifyHelp" />
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+              <label class="setting-field notify-interval">
+                <span class="setting-field-name">检查间隔</span>
+                <select id="notifyInterval">
+                  <option value="2">2 分钟</option>
+                  <option value="5">5 分钟</option>
+                  <option value="10">10 分钟</option>
+                  <option value="15">15 分钟</option>
+                </select>
+              </label>
+              <p class="settings-description" id="notifyHelp">为 ★ 收藏的主播弹出系统通知，关闭弹窗后仍在后台检查；Chrome 关闭时不检查。<span id="notifyFavoriteCount"></span></p>
+              <button class="settings-secondary-button" id="testNotifyBtn" type="button">发送测试通知</button>
+            </section>
             <section class="settings-recovery" aria-labelledby="restoreSettingsTitle">
               <h2 class="settings-heading" id="restoreSettingsTitle">恢复默认</h2>
-              <p class="settings-description">启用全部平台，恢复默认顺序与悬浮导航。保留你的收藏。</p>
+              <p class="settings-description">启用全部平台，恢复默认顺序、悬浮导航与追踪频道。保留你的收藏。</p>
               <button class="settings-secondary-button" id="resetSettingsBtn" type="button">恢复默认设置</button>
             </section>
           </div>
@@ -991,6 +1067,7 @@
       </footer>
     </section>
 
+    <script src="/src/settings.js"></script>
     <script src="/src/popup.js"></script>
   </body>
 </html>

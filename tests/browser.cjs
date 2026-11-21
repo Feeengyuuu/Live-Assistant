@@ -5,8 +5,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
 const sourceRoot = process.env.SOURCE_ROOT || path.resolve(__dirname, '..');
-const html = fs.readFileSync(path.join(sourceRoot, 'src/popup.html'), 'utf8').replace(/<script[^>]+src=["']\/src\/popup.js["'][^>]*><\/script>/, '');
-const source = fs.readFileSync(path.join(sourceRoot, 'src/popup.js'), 'utf8');
+const html = fs.readFileSync(path.join(sourceRoot, 'src/popup.html'), 'utf8').replace(/<script[^>]+src=["']\/src\/(?:settings|popup).js["'][^>]*><\/script>/g, '');
+const source = fs.readFileSync(path.join(sourceRoot, 'src/settings.js'), 'utf8') + '\n' + fs.readFileSync(path.join(sourceRoot, 'src/popup.js'), 'utf8');
 const streamer = (name, platform = 'bilibili', roomId = '1') => ({
   name, platform, roomId, url: `https://${platform === 'bilibili' ? 'live.bilibili.com' : 'www.douyu.com'}/${roomId}`,
   isLive: true, title: `${name} 的直播`, viewers: 1000,
@@ -38,7 +38,7 @@ async function setup(enabled = ['bilibili'], extra = {}) {
         remove: (keys, cb) => { keys.forEach(key => delete auditStore[key]); cb?.(); return Promise.resolve(); },
       } },
       runtime: {
-        getManifest: () => ({ version: '1.3.4' }),
+        getManifest: () => ({ version: '1.5.0' }),
         sendMessage: (request, callback) => {
           const message = { request, callback, done: false };
           auditMessages.push(message);
@@ -235,9 +235,10 @@ async function regressions() {
       assert.equal(await page.evaluate(()=>auditMessages.filter(m=>m.request.action==='getFollowedStreamers').length),1,'restore only edits the draft');
       assert.equal(await page.locator('.floating-buttons-container').isVisible(),false);
       await page.locator('#applySettingsBtn').click();
-      await page.waitForFunction(()=>auditMessages.filter(m=>m.request.action==='getFollowedStreamers').length===6);
+      await page.waitForFunction(()=>auditMessages.filter(m=>m.request.action==='getFollowedStreamers').length===8);
       await reply(page,'bilibili',ok([streamer('after-reset','bilibili','2')]),true);
       for(const platform of ['douyu','huya','douyin','twitch']) await reply(page,platform,{status:'auth_required',success:false,data:[],isLoggedIn:false});
+      for(const platform of ['youtube','kick']) await reply(page,platform,ok([]));
       await reply(page,'bilibili',ok([streamer('before-reset','bilibili','1')]));
       await page.evaluate(()=>liveAssistant.flushStorage());
       assert.equal(await page.evaluate(()=>auditStore.platformCache.bilibili.data[0].name),'after-reset');
@@ -303,6 +304,104 @@ async function regressions() {
       await reply(page,'douyu',withOffline([],[]));
       assert.equal(await page.locator('#settingsPanel').isVisible(),false);
       assert.deepEqual(await page.evaluate(() => auditStore.enabledPlatforms),['bilibili','douyu']);
+    } finally {await page.close();}
+  });
+  await run('upgrading from saved settings enables each newly added platform once; saved choices stay as saved', async () => {
+    const legacy = ['douyu','huya','bilibili','douyin','twitch'];
+    const page = await setup(['bilibili'], { platformOrder: legacy });
+    try {
+      assert.deepEqual(await page.evaluate(() => liveAssistant.getEnabledPlatformKeys()), ['bilibili','youtube','kick']);
+      assert.ok(await page.evaluate(() => ['youtube','kick'].every(key => auditMessages.some(m => m.request.platform === key))));
+    } finally {await page.close();}
+    const from14 = await setup(['bilibili'], { platformOrder: [...legacy, 'youtube'] });
+    try {
+      assert.deepEqual(await from14.evaluate(() => liveAssistant.getEnabledPlatformKeys()), ['bilibili','kick'], 'a saved YouTube choice is respected; Kick is new');
+    } finally {await from14.close();}
+    const custom = await setup(['bilibili'], { platformOrder: [...legacy, 'youtube', 'kick'] });
+    try {
+      assert.deepEqual(await custom.evaluate(() => liveAssistant.getEnabledPlatformKeys()), ['bilibili'], 'saved YouTube and Kick choices are respected');
+    } finally {await custom.close();}
+  });
+  await run('tracked channels show defaults, block unrecognized input and refresh the changed platform after Save', async () => {
+    const page = await setup(['bilibili','youtube']);
+    try {
+      await reply(page,'bilibili',ok([streamer('bili')]));
+      await reply(page,'youtube',ok([{ ...streamer('IShowSpeed','youtube','UCWsDFcIhY2DBi3GB5uykGXA'), url:'https://www.youtube.com/@IShowSpeed/live', viewers: 123456 }]));
+      await page.waitForFunction(() => document.querySelectorAll('.streamer-item').length === 2);
+      assert.equal(await page.locator('.streamer-item[data-platform="youtube"] .platform-badge-name').textContent(), 'YouTube');
+      assert.match(await page.locator('.streamer-item[data-platform="youtube"] .viewer-stat').textContent(), /12\.3万/);
+      await page.locator('#settingsBtn').click();
+      assert.equal(await page.locator('#trackedYouTube').inputValue(), '@IShowSpeed\n@KaiCenat');
+      assert.equal(await page.locator('#trackedTwitch').inputValue(), 'kaicenat');
+      assert.equal(await page.locator('#trackedKick').inputValue(), '', 'no Kick channel is tracked by default');
+      await page.locator('#trackedYouTube').fill('@IShowSpeed\nhttps://www.youtube.com/@LofiGirl\nnot a channel!');
+      assert.match(await page.locator('#trackedInvalid').textContent(), /channel!/);
+      assert.equal(await page.locator('#trackedYouTube').getAttribute('aria-invalid'), 'true');
+      const before = await page.evaluate(() => auditMessages.length);
+      await page.locator('#applySettingsBtn').click();
+      assert.equal(await page.locator('#settingsPanel').isVisible(), true, 'unrecognized input blocks Save');
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'trackedYouTube');
+      await page.locator('#trackedYouTube').fill('@IShowSpeed\nhttps://www.youtube.com/@LofiGirl');
+      assert.equal(await page.locator('#trackedInvalid').isVisible(), false);
+      assert.match(await page.locator('#settingsSaveState').innerText(), /未保存/);
+      await page.locator('#applySettingsBtn').click();
+      await page.waitForFunction(() => document.querySelector('#settingsPanel').style.display === 'none');
+      assert.deepEqual(await page.evaluate(() => auditStore.trackedChannels), { youtube: ['@IShowSpeed','@LofiGirl'], twitch: ['kaicenat'], kick: [] });
+      const refreshed = await page.evaluate(n => auditMessages.slice(n).filter(m => m.request.action === 'getFollowedStreamers').map(m => m.request.platform), before);
+      assert.deepEqual(refreshed, ['youtube'], 'only the platform whose channel list changed is refetched');
+    } finally {await page.close();}
+  });
+  await run('Kick tracked channels save from names or links and show live and offline entries', async () => {
+    const page = await setup(['bilibili','kick']);
+    try {
+      await reply(page,'bilibili',ok([streamer('bili')]));
+      await reply(page,'kick',withOffline([],[]));
+      await page.locator('#settingsBtn').click();
+      await page.locator('#trackedKick').fill('https://kick.com/xQc\nadinross\n主播');
+      assert.equal(await page.locator('#trackedKick').getAttribute('aria-invalid'), 'true');
+      await page.locator('#trackedKick').fill('https://kick.com/xQc\nadinross');
+      const before = await page.evaluate(() => auditMessages.length);
+      await page.locator('#applySettingsBtn').click();
+      await page.waitForFunction(() => document.querySelector('#settingsPanel').style.display === 'none');
+      assert.deepEqual(await page.evaluate(() => auditStore.trackedChannels.kick), ['xqc','adinross']);
+      const refreshed = await page.evaluate(n => auditMessages.slice(n).filter(m => m.request.action === 'getFollowedStreamers').map(m => m.request.platform), before);
+      assert.deepEqual(refreshed, ['kick']);
+      const live = { ...streamer('xQc','kick','xqc'), url:'https://kick.com/xqc', viewers: 5374, thumbnailKind:'live', startTime: new Date(Date.now() - 3_900_000).toISOString() };
+      const idle = { ...offline('adinross','kick','adinross'), url:'https://kick.com/adinross' };
+      await reply(page,'kick',withOffline([live, idle],[idle]));
+      await page.waitForFunction(() => document.querySelector('.streamer-item[data-platform="kick"]'));
+      const card = page.locator('.streamer-item[data-platform="kick"]');
+      assert.equal(await card.locator('.platform-badge-name').textContent(), 'Kick');
+      assert.match(await card.locator('.viewer-stat').textContent(), /👥 5\.4k/);
+      assert.match(await card.innerText(), /1h 5m/);
+      await card.locator('.favorite-button').click();
+      await page.evaluate(() => liveAssistant.flushStorage());
+      assert.deepEqual(await page.evaluate(() => auditStore.favoriteStreamers), ['kick:https://kick.com/xqc']);
+      assert.equal(await page.evaluate(() => liveAssistant.platformState.kick.offlineData.map(entry => entry.name).join()), 'adinross');
+    } finally {await page.close();}
+  });
+  await run('live notification settings save with the draft and the test button reaches the worker', async () => {
+    const page = await setup(['bilibili'], { favoriteStreamers: ['bilibili:https://live.bilibili.com/1'] });
+    try {
+      await reply(page,'bilibili',ok([streamer('fav')]));
+      await page.locator('#settingsBtn').click();
+      assert.equal(await page.locator('#notifyToggle').isChecked(), true, 'enabled by default');
+      assert.equal(await page.locator('#notifyInterval').inputValue(), '5');
+      assert.match(await page.locator('#notifyFavoriteCount').textContent(), /收藏 1 位/);
+      await page.locator('#testNotifyBtn').click();
+      assert.ok(await page.evaluate(() => auditMessages.some(m => m.request.action === 'testLiveNotification')));
+      await page.locator('#notifyInterval').selectOption('2');
+      assert.match(await page.locator('#settingsSaveState').innerText(), /未保存/);
+      await page.locator('#notifyToggle').uncheck();
+      assert.equal(await page.locator('#notifyInterval').isDisabled(), true);
+      await page.locator('#cancelSettingsBtn').click();
+      assert.equal(await page.evaluate(() => auditStore.liveNotifications), undefined, 'Cancel saves nothing');
+      await page.locator('#settingsBtn').click();
+      await page.locator('#notifyInterval').selectOption('10');
+      await page.locator('#applySettingsBtn').click();
+      await page.waitForFunction(() => document.querySelector('#settingsPanel').style.display === 'none');
+      assert.deepEqual(await page.evaluate(() => auditStore.liveNotifications), { enabled: true, intervalMinutes: 10 });
+      assert.equal(await page.evaluate(() => auditMessages.filter(m => m.request.action === 'getFollowedStreamers').length), 1, 'notification settings alone refetch nothing');
     } finally {await page.close();}
   });
 }

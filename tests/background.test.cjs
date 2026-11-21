@@ -12,20 +12,59 @@ const cookies = [
 
 function harness(fetchImpl, options = {}) {
   let listener;
+  const events = {};
+  const event = (name) => ({ addListener: (fn) => { events[name] = fn; } });
+  const alarms = new Map();
+  const notifications = [];
+  const tabs = [];
+  // Existing platform tests run without tracked channels unless a test supplies them.
+  const stored = { trackedChannels: options.trackedChannels ?? { youtube: [], twitch: [] }, ...options.stored };
   const context = vm.createContext({
     fetch: fetchImpl, AbortController, AbortSignal, URL, setTimeout: options.setTimeout || setTimeout,
-    clearTimeout, Date, importScripts() {}, console: { error() {}, warn() {} },
+    clearTimeout, Date, console: { error() {}, warn() {} },
+    importScripts: (...files) => files.forEach((file) => vm.runInContext(fs.readFileSync(path.join(__dirname, '../src', file), 'utf8'), context)),
     chrome: {
       cookies: { getAll: options.getCookies || ((_details, callback) => callback(options.cookies ?? cookies)) },
-      runtime: { onMessage: { addListener: (fn) => { listener = fn; } } },
+      storage: { onChanged: event('storage'), local: {
+        get: async () => structuredClone(stored),
+        set: async (values) => { Object.assign(stored, structuredClone(values)); },
+      } },
+      alarms: {
+        onAlarm: event('alarm'),
+        get: async (name) => alarms.get(name),
+        create: async (name, info) => { alarms.set(name, { name, ...info }); },
+        clear: async (name) => alarms.delete(name),
+      },
+      notifications: {
+        onClicked: event('notificationClick'),
+        getPermissionLevel: async () => options.permissionLevel ?? 'granted',
+        create: async (id, info) => {
+          if (options.rejectRemoteIcons && !info.iconUrl.startsWith('chrome-extension://')) throw new Error('Unable to download all specified images.');
+          notifications.push({ id, ...info });
+          return id;
+        },
+        clear: async () => true,
+      },
+      tabs: { create: async (info) => { tabs.push(info); } },
+      runtime: {
+        getURL: (file) => `chrome-extension://test-id/${file}`,
+        onInstalled: event('installed'), onStartup: event('startup'),
+        onMessage: { addListener: (fn) => { listener = fn; } },
+      },
     },
   });
   vm.runInContext(source, context);
   return {
+    stored, alarms, notifications, tabs, events,
     fetchPlatform: (key) => vm.runInContext(`fetchPlatform(${JSON.stringify(key)})`, context),
+    checkFavoriteLive: () => vm.runInContext('checkFavoriteLive()', context).then(plain),
+    scheduleLiveCheck: () => vm.runInContext('scheduleLiveCheck()', context),
     message: (platform, action = 'getFollowedStreamers') => new Promise((resolve) => listener({ action, platform }, {}, resolve)),
   };
 }
+
+// Values created inside the vm context have their own Array prototype.
+const plain = (value) => JSON.parse(JSON.stringify(value));
 
 function json(body, status = 200) {
   return { ok: status >= 200 && status < 300, status, headers: { get: () => 'application/json; charset=utf-8' }, json: async () => body };
@@ -427,4 +466,381 @@ test('duration, absent, invalid and future values never become an offline last-l
     profileRoom: 1, isLive: 0, startTime: 1689674245,
   }] } })).message('huya');
   assert.equal(huya.offlineData[0].lastLiveAt, undefined, 'unverified offline meaning of Huya startTime is not asserted');
+});
+
+function html(body, { status = 200, url = 'https://www.youtube.com/@channel/live' } = {}) {
+  return { ok: status >= 200 && status < 300, status, url, headers: { get: () => 'text/html; charset=utf-8' }, text: async () => body };
+}
+
+function youtubePage({ player, initial }) {
+  // Matches the page shape: object literals inside inline scripts, with braces inside strings.
+  return `<html><script>var ytInitialPlayerResponse = ${JSON.stringify(player ?? null)};var meta = {};</script>` +
+    `<script>var ytInitialData = ${JSON.stringify(initial ?? {})};</script></html>`;
+}
+
+const ytLive = youtubePage({
+  player: {
+    videoDetails: { videoId: 'live_video1', channelId: 'UCWsDFcIhY2DBi3GB5uykGXA', author: 'IShowSpeed', title: 'IRL {stream} "quoted"', isLive: true, viewCount: '9999999' },
+    microformat: { playerMicroformatRenderer: { liveBroadcastDetails: { isLiveNow: true, startTimestamp: '2026-10-30T18:00:00+00:00' } } },
+  },
+  initial: { contents: { twoColumnWatchNextResults: { results: { results: { contents: [
+    { videoPrimaryInfoRenderer: { viewCount: { videoViewCountRenderer: { originalViewCount: '123456', isLive: true } } } },
+    { videoSecondaryInfoRenderer: { owner: { videoOwnerRenderer: { thumbnail: { thumbnails: [{ url: 'https://yt3.ggpht.com/speed=s48-c-k' }] } } } } },
+  ] } } } } },
+});
+const ytUpcoming = youtubePage({
+  player: {
+    videoDetails: { videoId: 'upcoming_v1', channelId: 'UCWsDFcIhY2DBi3GB5uykGXA', author: 'IShowSpeed', title: '预告', isLiveContent: true, isUpcoming: true },
+    microformat: { playerMicroformatRenderer: { liveBroadcastDetails: { isLiveNow: false, startTimestamp: '2026-10-31T21:30:00+00:00' } } },
+  },
+});
+const ytChannel = youtubePage({ initial: { metadata: { channelMetadataRenderer: {
+  title: 'Kai Cenat', externalId: 'UCoEmptob-eEGKk18c2VplJg', avatar: { thumbnails: [{ url: 'https://yt3.googleusercontent.com/kai=s900-c-k' }] },
+} } } });
+
+test('YouTube tracked channels report live viewers, start time and live frame without login', async () => {
+  const requests = [];
+  const result = await harness(async (url, options) => {
+    requests.push({ url, options });
+    return html(ytLive);
+  }, { cookies: [], trackedChannels: { youtube: ['@IShowSpeed'], twitch: [] } }).message('youtube');
+  assert.equal(result.status, 'ok');
+  assert.equal(requests[0].url, 'https://www.youtube.com/@IShowSpeed/live');
+  assert.equal(requests[0].options.credentials, 'omit');
+  const [live] = result.data;
+  assert.equal(live.isLive, true);
+  assert.equal(live.name, 'IShowSpeed');
+  assert.equal(live.title, 'IRL {stream} "quoted"');
+  assert.equal(live.viewers, 123456, 'concurrent viewers, not the cumulative viewCount');
+  assert.equal(live.startTime, '2026-10-30T18:00:00.000Z');
+  assert.equal(live.roomId, 'UCWsDFcIhY2DBi3GB5uykGXA');
+  assert.equal(live.url, 'https://www.youtube.com/@IShowSpeed/live');
+  assert.equal(live.thumbnail, 'https://i.ytimg.com/vi/live_video1/mqdefault_live.jpg');
+  assert.equal(live.thumbnailKind, 'live');
+  assert.equal(live.avatar, 'https://yt3.ggpht.com/speed=s88-c-k');
+  assert.equal(result.offlineData.length, 0);
+});
+
+test('YouTube upcoming streams and plain channel pages are known offline entries', async () => {
+  const result = await harness(async (url) => html(url.includes('IShowSpeed') ? ytUpcoming : ytChannel), {
+    trackedChannels: { youtube: ['@IShowSpeed', 'UCoEmptob-eEGKk18c2VplJg'], twitch: [] },
+  }).message('youtube');
+  assert.equal(result.status, 'ok');
+  assert.equal(result.offlineCoverage, 'complete');
+  assert.deepEqual(plain(result.data).map((entry) => [entry.name, entry.isLive]), [['IShowSpeed', false], ['Kai Cenat', false]]);
+  assert.deepEqual(plain(result.offlineData.map((entry) => entry.name)), ['IShowSpeed', 'Kai Cenat']);
+  assert.equal(result.data[1].url, 'https://www.youtube.com/channel/UCoEmptob-eEGKk18c2VplJg/live');
+  assert.equal(result.data[1].avatar, 'https://yt3.googleusercontent.com/kai=s88-c-k');
+});
+
+test('YouTube missing channels, consent redirects and unreadable pages are partial, never offline', async () => {
+  const result = await harness(async (url) => {
+    if (url.includes('missing')) return html('', { status: 404 });
+    if (url.includes('consent')) return html(ytChannel, { url: 'https://consent.youtube.com/m?continue=x' });
+    if (url.includes('garbage')) return html('<html>no data</html>');
+    return html(ytLive);
+  }, { trackedChannels: { youtube: ['@IShowSpeed', '@missing', '@consent', '@garbage'], twitch: [] } }).message('youtube');
+  assert.equal(result.status, 'partial');
+  assert.match(result.error, /3 条/);
+  assert.deepEqual(plain(result.data).map((entry) => entry.name), ['IShowSpeed']);
+  assert.equal(result.offlineCoverage, 'partial');
+  assert.equal(result.fetchedAt, undefined);
+});
+
+test('YouTube with no tracked channels is a successful empty list without requests', async () => {
+  let requests = 0;
+  const result = await harness(async () => { requests++; return html(ytLive); }).message('youtube');
+  assert.equal(result.status, 'ok');
+  assert.equal(result.data.length, 0);
+  assert.equal(requests, 0);
+});
+
+// Shape of kick.com/api/v1/channels/<slug>: times are UTC without a zone, thumbnails come in several widths.
+function kickChannel(slug, { username = slug, livestream = null, previous = [], banned = false } = {}) {
+  return {
+    slug, is_banned: banned, followersCount: 11798, livestream, previous_livestreams: previous,
+    user: { username, profile_pic: `https://files.kick.com/images/user/${slug}/avatar.webp` },
+  };
+}
+
+const kickStream = {
+  is_live: true, session_title: 'Kick 测试直播', start_time: '2026-11-21 13:23:54', viewer_count: 5374,
+  thumbnail: {
+    url: 'https://images.kick.com/video_thumbnails/ch/run/720.webp?versionId=a',
+    responsive: 'https://images.kick.com/video_thumbnails/ch/run/1080.webp?versionId=b 1920w, ' +
+      'https://images.kick.com/video_thumbnails/ch/run/720.webp?versionId=a 1280w, ' +
+      'https://images.kick.com/video_thumbnails/ch/run/480.webp?versionId=c 640w',
+  },
+  categories: [{ name: 'Grand Theft Auto VI (GTA)' }],
+};
+
+test('Kick tracked channels report live viewers, UTC start time and a card-sized live frame without login', async () => {
+  const requests = [];
+  const result = await harness(async (url, options) => {
+    requests.push({ url, options });
+    return json(kickChannel('xqc', { username: 'xQc', livestream: kickStream }));
+  }, { cookies: [], trackedChannels: { kick: ['xqc'] } }).message('kick');
+  assert.equal(result.status, 'ok');
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, 'https://kick.com/api/v1/channels/xqc');
+  assert.equal(requests[0].options.credentials, 'omit');
+  const [live] = result.data;
+  assert.equal(live.isLive, true);
+  assert.equal(live.name, 'xQc');
+  assert.equal(live.roomId, 'xqc');
+  assert.equal(live.url, 'https://kick.com/xqc');
+  assert.equal(live.title, 'Kick 测试直播');
+  assert.equal(live.viewers, 5374);
+  assert.equal(live.startTime, '2026-11-21T13:23:54.000Z', 'Kick times are UTC, not local time');
+  assert.equal(live.gameName, 'Grand Theft Auto VI (GTA)');
+  assert.equal(live.avatar, 'https://files.kick.com/images/user/xqc/avatar.webp');
+  assert.equal(live.thumbnail, 'https://images.kick.com/video_thumbnails/ch/run/480.webp?versionId=c');
+  assert.equal(live.thumbnailKind, 'live');
+  assert.equal(result.offlineData.length, 0);
+});
+
+test('Kick offline and banned channels are known offline entries with their last stream start', async () => {
+  const channels = {
+    adinross: kickChannel('adinross'),
+    xqc: kickChannel('xqc', { username: 'xQc', previous: [{ start_time: '2026-11-20 13:00:15' }, { start_time: '2026-11-19 13:57:32' }] }),
+    banned: kickChannel('banned', { livestream: kickStream, banned: true }),
+  };
+  const result = await harness(async (url) => json(channels[url.split('/').pop()]), {
+    trackedChannels: { kick: Object.keys(channels) },
+  }).message('kick');
+  assert.equal(result.status, 'ok');
+  assert.equal(result.offlineCoverage, 'complete');
+  assert.deepEqual(plain(result.data).map((entry) => [entry.name, entry.isLive]), [['adinross', false], ['xQc', false], ['banned', false]]);
+  assert.deepEqual(plain(result.offlineData.map((entry) => entry.roomId)), ['adinross', 'xqc', 'banned']);
+  assert.equal(result.data[0].lastLiveAt, undefined, 'a channel that never streamed has no last-live time');
+  assert.equal(result.data[1].lastLiveAt, Date.UTC(2026, 10, 20, 13, 0, 15));
+  assert.equal(result.data[1].lastLiveSource, 'platform_start');
+});
+
+test('Kick missing channels and blocked responses are partial, never offline', async () => {
+  const result = await harness(async (url) => {
+    if (url.endsWith('/missing')) return json({ error: 'Not Found', message: 'Channel not found.', status: 404 }, 404);
+    if (url.endsWith('/blocked')) return html('<html>Just a moment...</html>', { status: 403 });
+    if (url.endsWith('/garbage')) return json({ unexpected: true });
+    return json(kickChannel('xqc', { livestream: kickStream }));
+  }, { trackedChannels: { kick: ['xqc', 'missing', 'blocked', 'garbage'] } }).message('kick');
+  assert.equal(result.status, 'partial');
+  assert.match(result.error, /3 条/);
+  assert.deepEqual(plain(result.data).map((entry) => entry.roomId), ['xqc']);
+  assert.equal(result.offlineCoverage, 'partial');
+  assert.equal(result.fetchedAt, undefined);
+});
+
+test('Kick with no tracked channels is a successful empty list without requests', async () => {
+  let requests = 0;
+  const result = await harness(async () => { requests++; return json(kickChannel('xqc')); }).message('kick');
+  assert.equal(result.status, 'ok');
+  assert.equal(result.data.length, 0);
+  assert.equal(requests, 0);
+});
+
+test('a favorite Kick channel is announced when it goes live and the notification opens its page', async () => {
+  const favorite = 'kick:https://kick.com/xqc';
+  const requests = [];
+  let livestream = null;
+  const api = harness(async (url) => {
+    requests.push(url);
+    return json(kickChannel('xqc', { username: 'xQc', livestream }));
+  }, { trackedChannels: { kick: ['xqc'] }, stored: { favoriteStreamers: [favorite] } });
+  assert.deepEqual(await api.checkFavoriteLive(), []);
+  livestream = kickStream;
+  assert.deepEqual(await api.checkFavoriteLive(), [favorite]);
+  assert.ok(requests.every((url) => url === 'https://kick.com/api/v1/channels/xqc'), 'only the platform with a favorite is requested');
+  const [notice] = api.notifications;
+  assert.equal(notice.title, 'xQc 开播了');
+  assert.equal(notice.contextMessage, 'Kick · Grand Theft Auto VI (GTA)');
+  api.events.notificationClick(notice.id);
+  assert.deepEqual(plain(api.tabs), [{ url: 'https://kick.com/xqc' }]);
+});
+
+function twitchFollowed(logins) {
+  return json([{ data: { sideNav: { sections: { edges: [{ node: { id: 'side-nav-followed', content: { edges: logins.map((login) => ({ node: {
+    __typename: 'Stream', viewersCount: 10, broadcaster: { login, displayName: login, broadcastSettings: { title: '关注直播' } }, game: null,
+  } })) } } }] } } } }]);
+}
+
+test('Twitch tracked channels are added from the public query without duplicating followed channels', async () => {
+  const requests = [];
+  const result = await harness(async (url, options) => {
+    const body = JSON.parse(options.body);
+    requests.push({ headers: options.headers, body });
+    if (Array.isArray(body)) return twitchFollowed(['xqc']);
+    return json({ data: { users: [
+      { login: 'kaicenat', displayName: 'KaiCenat', profileImageURL: 'https://static-cdn.jtvnw.net/kai.png', stream: {
+        title: 'Mafiathon', viewersCount: 50000, createdAt: '2026-10-30T20:00:00Z', game: { displayName: 'Just Chatting' },
+      } },
+      { login: 'sleepy', displayName: 'sleepy', stream: null },
+      null,
+    ] } });
+  }, { trackedChannels: { youtube: [], twitch: ['xqc', 'kaicenat', 'sleepy', 'nobody'] } }).message('twitch');
+  assert.equal(result.status, 'ok');
+  assert.deepEqual(plain(result.data).map((entry) => entry.roomId), ['xqc', 'kaicenat']);
+  assert.deepEqual(plain(requests[1].body.variables.logins), ['kaicenat', 'sleepy', 'nobody'], 'already followed channels are not queried');
+  assert.equal(requests[1].headers.Authorization, undefined, 'public lookup never sends the account token');
+  assert.equal(requests[1].headers['Client-Id'], 'kimne78kx3ncx6brgo4mv6wki5h1ko');
+  const kai = result.data[1];
+  assert.equal(kai.isLive, true);
+  assert.equal(kai.viewers, 50000);
+  assert.equal(kai.startTime, '2026-10-30T20:00:00Z');
+  assert.equal(kai.gameName, 'Just Chatting');
+  assert.equal(kai.url, 'https://www.twitch.tv/kaicenat');
+});
+
+test('Twitch tracked lookup failure keeps followed rows but is not a complete snapshot', async () => {
+  const result = await harness(async (_url, options) => Array.isArray(JSON.parse(options.body))
+    ? twitchFollowed(['xqc'])
+    : json({ errors: [{ message: 'service timeout' }] }), { trackedChannels: { youtube: [], twitch: ['kaicenat'] } }).message('twitch');
+  assert.equal(result.status, 'partial');
+  assert.deepEqual(plain(result.data).map((entry) => entry.roomId), ['xqc']);
+  assert.equal(result.fetchedAt, undefined);
+});
+
+test('tracked channel input accepts handles, IDs and links and rejects other sites', () => {
+  const context = vm.createContext({ URL });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/settings.js'), 'utf8'), context);
+  const call = (expression) => JSON.parse(vm.runInContext(`JSON.stringify(${expression})`, context));
+  const yt = (value) => call(`normalizeYouTubeChannel(${JSON.stringify(value)})`);
+  const tw = (value) => call(`normalizeTwitchChannel(${JSON.stringify(value)})`);
+  assert.equal(yt('@IShowSpeed'), '@IShowSpeed');
+  assert.equal(yt('IShowSpeed'), '@IShowSpeed');
+  assert.equal(yt('https://www.youtube.com/@IShowSpeed/live'), '@IShowSpeed');
+  assert.equal(yt('youtube.com/channel/UCWsDFcIhY2DBi3GB5uykGXA'), 'UCWsDFcIhY2DBi3GB5uykGXA');
+  assert.equal(yt('m.youtube.com/@KaiCenat'), '@KaiCenat');
+  for (const bad of ['https://www.twitch.tv/kaicenat', 'youtube.com/user/legacy', 'a', '@has space', '<script>', 'https://evil.test/@x']) {
+    assert.equal(yt(bad), '', bad);
+  }
+  assert.equal(tw('KaiCenat'), 'kaicenat');
+  assert.equal(tw('https://www.twitch.tv/kaicenat'), 'kaicenat');
+  assert.equal(tw('youtube.com/@KaiCenat'), '');
+  assert.equal(tw('bad-name'), '');
+  const kick = (value) => call(`normalizeKickChannel(${JSON.stringify(value)})`);
+  assert.equal(kick('xQc'), 'xqc');
+  assert.equal(kick('https://kick.com/xQc'), 'xqc');
+  assert.equal(kick('kick.com/adinross?ref=sidebar'), 'adinross');
+  assert.equal(kick('some_name-1'), 'some_name-1');
+  for (const bad of ['https://www.twitch.tv/xqc', 'kick.com/', 'ab', 'has space', '<script>', '主播']) {
+    assert.equal(kick(bad), '', bad);
+  }
+  const text = JSON.stringify('@IShowSpeed\n@ishowspeed, @KaiCenat，bad name!');
+  assert.deepEqual(call(`parseTrackedChannelText(${text}, normalizeYouTubeChannel)`), { channels: ['@IShowSpeed', '@KaiCenat', '@bad'], invalid: ['name!'] });
+  assert.deepEqual(call('[normalizeTrackedChannels(), normalizeTrackedChannels({ youtube: [] })]'),
+    [{ youtube: ['@IShowSpeed', '@KaiCenat'], twitch: ['kaicenat'], kick: [] }, { youtube: [], twitch: [], kick: [] }]);
+  assert.deepEqual(call('normalizeTrackedChannels({ youtube: ["@a_b_c"], kick: ["xQc", "xqc", "kick.com/adinross"] })'),
+    { youtube: ['@a_b_c'], twitch: [], kick: ['xqc', 'adinross'] }, 'settings saved before Kick existed keep working');
+});
+
+const room = (id) => `bilibili:https://live.bilibili.com/${id}`;
+
+// Bilibili's live list only contains rooms that are live; `state.live` decides which rooms it returns.
+function liveHarness(stored, options = {}) {
+  const state = { live: [], requests: [], fail: false };
+  const api = harness(async (url) => {
+    state.requests.push(url);
+    if (state.fail) return json({}, 500);
+    return json({ code: 0, data: { list: state.live.map((id) => ({
+      ...bilibiliItem(id), uname: `主播 ${id}`, title: `直播 ${id}`, area_v2_name: '英雄联盟', face: `https://i0.hdslb.com/face-${id}.jpg`,
+    })) } });
+  }, { stored: { enabledPlatforms: ['bilibili', 'douyu'], ...stored }, ...options });
+  return { api, state };
+}
+
+test('go-live notification fires only on an observed offline-to-live change and opens the room on click', async () => {
+  const { api, state } = liveHarness({ favoriteStreamers: [room(1), room(2)] });
+  state.live = [1];
+  assert.deepEqual(await api.checkFavoriteLive(), [], 'a favorite already live on the first check is only recorded');
+  assert.ok(state.requests.every((url) => url.includes('bilibili.com')), 'platforms without favorites are not requested');
+  assert.equal(api.stored.liveNotifyState.records[room(2)].live, false, 'absence from a complete live list is offline');
+
+  state.live = [1, 2];
+  assert.deepEqual(await api.checkFavoriteLive(), [room(2)]);
+  const [notice] = api.notifications;
+  assert.equal(notice.id, `live:${room(2)}`);
+  assert.equal(notice.title, '主播 2 开播了');
+  assert.equal(notice.message, '直播 2');
+  assert.equal(notice.contextMessage, 'B站 · 英雄联盟');
+  assert.equal(notice.iconUrl, 'https://i0.hdslb.com/face-2.jpg');
+
+  assert.deepEqual(await api.checkFavoriteLive(), [], 'a stream that stays live is announced once');
+  api.events.notificationClick(notice.id);
+  assert.deepEqual(plain(api.tabs), [{ url: 'https://live.bilibili.com/2' }]);
+});
+
+test('failed checks and short drops never re-announce a stream; a real restart does', async () => {
+  const { api, state } = liveHarness({ favoriteStreamers: [room(1)] });
+  state.live = [];
+  await api.checkFavoriteLive();
+  state.live = [1];
+  assert.deepEqual(await api.checkFavoriteLive(), [room(1)]);
+
+  state.fail = true;
+  assert.deepEqual(await api.checkFavoriteLive(), []);
+  assert.equal(api.stored.liveNotifyState.records[room(1)].live, true, 'an unknown state keeps the last record');
+  state.fail = false;
+  assert.deepEqual(await api.checkFavoriteLive(), [], 'recovery from a failed request is not a new stream');
+
+  state.live = [];
+  await api.checkFavoriteLive();
+  state.live = [1];
+  assert.deepEqual(await api.checkFavoriteLive(), [], 'a drop shorter than the restart gap is not announced');
+
+  state.live = [];
+  await api.checkFavoriteLive();
+  api.stored.liveNotifyState.records[room(1)].lastLiveAt -= 30 * 60_000;
+  state.live = [1];
+  assert.deepEqual(await api.checkFavoriteLive(), [room(1)], 'a stream after a real break is announced');
+  assert.equal(api.notifications.length, 2);
+});
+
+test('unfavorited streamers are forgotten and legacy name favorites still match', async () => {
+  const { api, state } = liveHarness({ favoriteStreamers: ['主播 7'], enabledPlatforms: ['bilibili'] });
+  state.live = [];
+  await api.checkFavoriteLive();
+  state.live = [7];
+  await api.checkFavoriteLive();
+  state.live = [];
+  await api.checkFavoriteLive();
+  assert.equal(api.stored.liveNotifyState.records[room(7)].live, false, 'a name-only favorite is tracked by its room');
+  state.live = [7];
+  api.stored.liveNotifyState.records[room(7)].lastLiveAt = 0;
+  assert.deepEqual(await api.checkFavoriteLive(), [room(7)]);
+  api.stored.favoriteStreamers = [];
+  await api.checkFavoriteLive();
+  assert.deepEqual(plain(api.stored.liveNotifyState.records), {});
+});
+
+test('notification settings control the alarm, and disabled checks make no requests', async () => {
+  const { api, state } = liveHarness({ favoriteStreamers: [room(1)] });
+  await api.scheduleLiveCheck();
+  assert.equal(api.alarms.get('favorite-live-check').periodInMinutes, 5, 'enabled every 5 minutes by default');
+
+  api.stored.liveNotifications = { enabled: true, intervalMinutes: 2 };
+  api.events.storage({ liveNotifications: { newValue: api.stored.liveNotifications } }, 'local');
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(api.alarms.get('favorite-live-check').periodInMinutes, 2);
+
+  api.stored.liveNotifications = { enabled: false, intervalMinutes: 2 };
+  await api.scheduleLiveCheck();
+  assert.equal(api.alarms.size, 0);
+  assert.deepEqual(await api.checkFavoriteLive(), []);
+  assert.equal(state.requests.length, 0);
+});
+
+test('a failed avatar download still notifies with the extension icon; test notification reports permission', async () => {
+  const { api, state } = liveHarness({ favoriteStreamers: [room(3)] }, { rejectRemoteIcons: true });
+  await api.checkFavoriteLive();
+  state.live = [3];
+  await api.checkFavoriteLive();
+  assert.equal(api.notifications[0].iconUrl, 'chrome-extension://test-id/icon.png');
+
+  const sent = await api.message(undefined, 'testLiveNotification');
+  assert.equal(sent.success, true);
+  assert.equal(api.notifications.at(-1).id, 'live-test');
+  const denied = await liveHarness({}, { permissionLevel: 'denied' }).api.message(undefined, 'testLiveNotification');
+  assert.equal(denied.success, false);
+  assert.match(denied.error, /关闭/);
 });
